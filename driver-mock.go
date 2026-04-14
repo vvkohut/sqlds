@@ -70,8 +70,3 @@ func (h *SQLMock) Connect(_ context.Context, _ backend.DataSourceInstanceSetting
 func (h *SQLMock) Converters() []sqlutil.Converter {
 	return []sqlutil.Converter{}
 }
-
-// Macros returns list of macro functions convert the macros of raw query
-func (h *SQLMock) Macros() Macros {
-	return Macros{}
-}

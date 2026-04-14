@@ -1,16 +1,15 @@
-package sqlds_test
+package sqlds
 
 import (
 	"context"
 	"fmt"
-	"testing"
-	"time"
-
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 	"github.com/grafana/sqlds/v4"
 	"github.com/grafana/sqlds/v4/test"
 	"github.com/stretchr/testify/require"
+	"testing"
+	"time"
 )
 
 // we test how no-rows sql responses are converted to dataframes

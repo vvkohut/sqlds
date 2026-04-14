@@ -1,4 +1,4 @@
-package sqlds_test
+package sqlds
 
 import (
 	"context"
@@ -105,10 +105,10 @@ func Test_custom_marco_errors(t *testing.T) {
 	cfg := `{ "timeout": 0, "retries": 0, "retryOn": ["foo"], query: "badArgumentCount" }`
 	opts := test.DriverOpts{}
 
-	badArgumentCountFunc := func(query *sqlds.Query, args []string) (string, error) {
+	badArgumentCountFunc := func(query *sqlutil.Query, args []string) (string, error) {
 		return "", sqlutil.ErrorBadArgumentCount
 	}
-	macros := sqlds.Macros{
+	macros := sqlutil.Macros{
 		"foo": badArgumentCountFunc,
 	}
 
@@ -196,10 +196,10 @@ func Test_query_panic_recovery(t *testing.T) {
 	opts := test.DriverOpts{}
 
 	// Create a macro that triggers a panic
-	panicMacro := func(query *sqlds.Query, args []string) (string, error) {
+	panicMacro := func(query *sqlutil.Query, args []string) (string, error) {
 		panic("Random panic for testing purposes")
 	}
-	macros := sqlds.Macros{
+	macros := sqlutil.Macros{
 		"panicTest": panicMacro,
 	}
 
@@ -223,7 +223,7 @@ func Test_query_panic_recovery(t *testing.T) {
 	assert.Nil(t, res.Frames)
 }
 
-func queryRequest(t *testing.T, name string, opts test.DriverOpts, cfg string, marcos sqlds.Macros) (*backend.QueryDataRequest, *test.SqlHandler, *sqlds.SQLDatasource) {
+func queryRequest(t *testing.T, name string, opts test.DriverOpts, cfg string, marcos sqlutil.Macros) (*backend.QueryDataRequest, *test.SqlHandler, *sqlds.SQLDatasource) {
 	driver, handler := test.NewDriver(name, test.Data{}, nil, opts, marcos)
 	ds := sqlds.NewDatasource(driver)
 

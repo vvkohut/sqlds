@@ -30,7 +30,7 @@ const (
 
 var durationMetric = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Namespace: "plugins",
-	Name:      "plugin_request_duration_seconds",
+	Name:      "hdx_plugin_request_duration_seconds",
 	Help:      "Duration of plugin execution",
 }, []string{"datasource_name", "datasource_type", "source", "endpoint", "status"})
 

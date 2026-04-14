@@ -30,7 +30,6 @@ type Driver interface {
 	Connect(context.Context, backend.DataSourceInstanceSettings, json.RawMessage) (*sql.DB, error)
 	// Settings are read whenever the plugin is initialized, or after the data source settings are updated
 	Settings(context.Context, backend.DataSourceInstanceSettings) DriverSettings
-	Macros() Macros
 	Converters() []sqlutil.Converter
 }
 

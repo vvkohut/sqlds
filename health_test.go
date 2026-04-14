@@ -1,26 +1,35 @@
-package sqlds_test
+package sqlds
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	sqlds "github.com/grafana/sqlds/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func getFakeConnector(t *testing.T, shouldFail bool) *sqlds.Connector {
+func getFakeConnector(t *testing.T, shouldFail bool) *Connector {
 	t.Helper()
-	c, _ := sqlds.NewConnector(context.TODO(), &sqlds.SQLMock{ShouldFailToConnect: shouldFail}, backend.DataSourceInstanceSettings{}, false)
-	return c
+	db, _ := newSqlmockDB(t)
+	if shouldFail {
+		db.Close()
+	}
+
+	driver := &stubDriver{
+		settings:   DriverSettings{},
+		connectDBs: []*sql.DB{db},
+	}
+	c, _ := NewConnector(context.TODO(), driver, buildInstanceSettings())
+	return &c
 }
 
 func TestHealthChecker_Check(t *testing.T) {
 	tests := []struct {
 		name            string
-		Connector       *sqlds.Connector
-		Metrics         sqlds.Metrics
+		Connector       *Connector
+		Metrics         Metrics
 		PreCheckHealth  func(ctx context.Context, req *backend.CheckHealthRequest) *backend.CheckHealthResult
 		PostCheckHealth func(ctx context.Context, req *backend.CheckHealthRequest) *backend.CheckHealthResult
 		ctx             context.Context
@@ -56,7 +65,7 @@ func TestHealthChecker_Check(t *testing.T) {
 			PostCheckHealth: func(ctx context.Context, req *backend.CheckHealthRequest) *backend.CheckHealthResult {
 				return &backend.CheckHealthResult{Status: backend.HealthStatusOk}
 			},
-			want: &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: "unable to get default db connection"},
+			want: &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: "sql: database is closed"},
 		},
 		{
 			name:      "should not error when post check succeed",
@@ -78,7 +87,7 @@ func TestHealthChecker_Check(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			connector := tt.Connector
 			if connector == nil {
-				connector = &sqlds.Connector{}
+				connector = getFakeConnector(t, false)
 			}
 			req := tt.req
 			if req == nil {
@@ -88,8 +97,8 @@ func TestHealthChecker_Check(t *testing.T) {
 			if want == nil {
 				want = &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: "Data source is working"}
 			}
-			hc := &sqlds.HealthChecker{
-				Connector:       connector,
+			hc := &HealthChecker{
+				Connector:       *connector,
 				Metrics:         tt.Metrics,
 				PreCheckHealth:  tt.PreCheckHealth,
 				PostCheckHealth: tt.PostCheckHealth,

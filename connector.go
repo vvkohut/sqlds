@@ -3,62 +3,99 @@ package sqlds
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"encoding/json"
+	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
+	"github.com/hydrolix/sqlds/v4/models"
+	"github.com/jellydator/ttlcache/v3"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
 
-type Connector struct {
-	UID            string
-	connections    sync.Map
-	driver         Driver
-	driverSettings DriverSettings
-	// Enabling multiple connections may cause that concurrent connection limits
-	// are hit. The datasource enabling this should make sure connections are cached
-	// if necessary.
-	enableMultipleConnections bool
+type Connector interface {
+	Connect(ctx context.Context, headers http.Header) (*dbConnection, error)
+	connectWithRetries(ctx context.Context, conn dbConnection, key string, headers http.Header) error
+	connect(conn dbConnection) error
+	ping(conn dbConnection) error
+	Reconnect(ctx context.Context, dbConn dbConnection, q *sqlutil.Query, cacheKey string) (*sql.DB, error)
+	getDBConnection(key string) (dbConnection, bool)
+	storeDBConnection(key string, dbConn dbConnection)
+	Dispose()
+	GetConnectionFromQuery(ctx context.Context, q *sqlutil.Query) (string, dbConnection, error)
+	GetDriver() Driver
+	GetUID() string
+	getDriverSettings() DriverSettings
+	getInstanceSettings() backend.DataSourceInstanceSettings
 }
 
-func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourceInstanceSettings, enableMultipleConnections bool) (*Connector, error) {
-	ds := driver.Settings(ctx, settings)
-	db, err := driver.Connect(ctx, settings, nil)
+type HydrolixConnector struct {
+	UID              string
+	connections      *ttlcache.Cache[string, dbConnection]
+	Driver           Driver
+	driverSettings   DriverSettings
+	instanceSettings backend.DataSourceInstanceSettings
+	pluginSettings   models.PluginSettings
+}
+
+func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourceInstanceSettings) (Connector, error) {
+	pluginSettings, err := models.NewPluginSettings(ctx, settings)
 	if err != nil {
 		return nil, backend.DownstreamError(err)
 	}
+	ds := driver.Settings(ctx, settings)
+	connections := *ttlcache.New[string, dbConnection](ttlcache.WithTTL[string, dbConnection](time.Hour))
+	connections.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, i *ttlcache.Item[string, dbConnection]) {
+		_ = i.Value().db.Close()
+	})
 
-	conn := &Connector{
-		UID:                       settings.UID,
-		driver:                    driver,
-		driverSettings:            ds,
-		enableMultipleConnections: enableMultipleConnections,
+	conn := &HydrolixConnector{
+		UID:              settings.UID,
+		Driver:           driver,
+		driverSettings:   ds,
+		instanceSettings: settings,
+		pluginSettings:   pluginSettings,
+		connections:      &connections,
 	}
-	key := defaultKey(settings.UID)
-	conn.storeDBConnection(key, dbConnection{db, settings})
+	if pluginSettings.CredentialsType != "forwardOAuth" {
+		key := defaultKey(settings.UID)
+		db, err := driver.Connect(ctx, settings, nil)
+		if err != nil {
+			return nil, backend.DownstreamError(err)
+		}
+		conn.storeDBConnectionWithTTL(key, dbConnection{db, settings}, ttlcache.NoTTL)
+	}
 	return conn, nil
 }
 
-func (c *Connector) Connect(ctx context.Context, headers http.Header) (*dbConnection, error) {
-	key := defaultKey(c.UID)
+func (c *HydrolixConnector) Connect(ctx context.Context, headers http.Header) (*dbConnection, error) {
+	key := ""
+	if c.pluginSettings.CredentialsType == "forwardOAuth" {
+		key = keyWithConnectionArgs(c.UID, getOAuthConnectionArgs(headers.Get(backend.OAuthIdentityTokenHeaderName)))
+	} else {
+		key = defaultKey(c.UID)
+	}
 	dbConn, ok := c.getDBConnection(key)
 	if !ok {
-		return nil, ErrorMissingDBConnection
+		db, err := c.Driver.Connect(ctx, c.instanceSettings, getOAuthConnectionArgs(headers.Get(backend.OAuthIdentityTokenHeaderName)))
+		if err != nil {
+			return nil, err
+		}
+		// Assign this connection in the cache
+		dbConn = dbConnection{db, c.instanceSettings}
+		c.storeDBConnection(key, dbConn)
 	}
-
 	if c.driverSettings.Retries == 0 {
 		err := c.connect(dbConn)
-		return nil, err
+		return &dbConn, err
 	}
-
 	err := c.connectWithRetries(ctx, dbConn, key, headers)
 	return &dbConn, err
 }
 
-func (c *Connector) connectWithRetries(ctx context.Context, conn dbConnection, key string, headers http.Header) error {
-	q := &Query{}
+func (c *HydrolixConnector) connectWithRetries(ctx context.Context, conn dbConnection, key string, headers http.Header) error {
+	q := &sqlutil.Query{}
 	if c.driverSettings.ForwardHeaders {
 		applyHeaders(q, headers)
 	}
@@ -90,13 +127,35 @@ func (c *Connector) connectWithRetries(ctx context.Context, conn dbConnection, k
 		if c.driverSettings.Pause > 0 {
 			time.Sleep(time.Duration(c.driverSettings.Pause * int(time.Second)))
 		}
-		backend.Logger.Warn(fmt.Sprintf("connect failed: %s. Retrying %d times", err.Error(), i+1))
+		backend.Logger.Warn("connect failed", "error", err.Error(), "retry", i+1)
 	}
 
 	return err
 }
 
-func (c *Connector) connect(conn dbConnection) error {
+func applyHeaders(query *sqlutil.Query, headers http.Header) *sqlutil.Query {
+	var args map[string]interface{}
+	if query.ConnectionArgs == nil {
+		query.ConnectionArgs = []byte("{}")
+	}
+	err := json.Unmarshal(query.ConnectionArgs, &args)
+	if err != nil {
+		backend.Logger.Warn("Failed to apply headers", "error", err.Error())
+		return query
+	}
+	args[HeaderKey] = headers
+	raw, err := json.Marshal(args)
+	if err != nil {
+		backend.Logger.Warn("Failed to apply headers", "error", err.Error())
+		return query
+	}
+
+	query.ConnectionArgs = raw
+
+	return query
+}
+
+func (c *HydrolixConnector) connect(conn dbConnection) error {
 	if err := c.ping(conn); err != nil {
 		return backend.DownstreamError(err)
 	}
@@ -104,80 +163,103 @@ func (c *Connector) connect(conn dbConnection) error {
 	return nil
 }
 
-func (c *Connector) ping(conn dbConnection) error {
-	if c.driverSettings.Timeout == 0 {
-		return conn.db.Ping()
-	}
+func (c *HydrolixConnector) ping(conn dbConnection) error {
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.driverSettings.Timeout)
-	defer cancel()
-
-	return conn.db.PingContext(ctx)
+	return conn.db.Ping()
 }
 
-func (c *Connector) Reconnect(ctx context.Context, dbConn dbConnection, q *Query, cacheKey string) (*sql.DB, error) {
+func (c *HydrolixConnector) Reconnect(ctx context.Context, dbConn dbConnection, q *sqlutil.Query, cacheKey string) (*sql.DB, error) {
 	if err := dbConn.db.Close(); err != nil {
-		backend.Logger.Warn(fmt.Sprintf("closing existing connection failed: %s", err.Error()))
+		backend.Logger.Warn("closing existing connection failed", "error", err.Error())
 	}
 
-	db, err := c.driver.Connect(ctx, dbConn.settings, q.ConnectionArgs)
+	db, err := c.Driver.Connect(ctx, dbConn.settings, q.ConnectionArgs)
 	if err != nil {
+		if db != nil {
+			_ = db.Close()
+		}
 		return nil, backend.DownstreamError(err)
 	}
 	c.storeDBConnection(cacheKey, dbConnection{db, dbConn.settings})
 	return db, nil
 }
 
-func (ds *Connector) getDBConnection(key string) (dbConnection, bool) {
-	conn, ok := ds.connections.Load(key)
-	if !ok {
+func (c *HydrolixConnector) getDBConnection(key string) (dbConnection, bool) {
+	conn := c.connections.Get(key)
+	if conn == nil {
 		return dbConnection{}, false
 	}
-	return conn.(dbConnection), true
+	return conn.Value(), true
 }
 
-func (ds *Connector) storeDBConnection(key string, dbConn dbConnection) {
-	ds.connections.Store(key, dbConn)
+func (c *HydrolixConnector) storeDBConnectionWithTTL(key string, dbConn dbConnection, ttl time.Duration) {
+	c.connections.Set(key, dbConn, ttl)
+}
+func (c *HydrolixConnector) storeDBConnection(key string, dbConn dbConnection) {
+	c.storeDBConnectionWithTTL(key, dbConn, ttlcache.DefaultTTL)
 }
 
 // Dispose is called when an existing SQLDatasource needs to be replaced
-func (c *Connector) Dispose() {
-	c.connections.Range(func(_, conn interface{}) bool {
-		_ = conn.(dbConnection).db.Close()
-		return true
-	})
-	c.connections.Clear()
+func (c *HydrolixConnector) Dispose() {
+	c.connections.DeleteAll()
 }
 
-func (c *Connector) GetConnectionFromQuery(ctx context.Context, q *Query) (string, dbConnection, error) {
-	if !c.enableMultipleConnections && !c.driverSettings.ForwardHeaders && len(q.ConnectionArgs) > 0 {
-		return "", dbConnection{}, MissingMultipleConnectionsConfig
-	}
+func (c *HydrolixConnector) getDriverSettings() DriverSettings {
+	return c.driverSettings
+}
+
+func (c *HydrolixConnector) GetDriver() Driver {
+	return c.Driver
+}
+func (c *HydrolixConnector) GetUID() string {
+	return c.UID
+}
+func (c *HydrolixConnector) getInstanceSettings() backend.DataSourceInstanceSettings {
+	return c.instanceSettings
+}
+
+func (c *HydrolixConnector) GetConnectionFromQuery(ctx context.Context, q *sqlutil.Query) (string, dbConnection, error) {
+
 	// The database connection may vary depending on query arguments
 	// The raw arguments are used as key to store the db connection in memory so they can be reused
-	key := defaultKey(c.UID)
-	dbConn, ok := c.getDBConnection(key)
-	if !ok {
-		return "", dbConnection{}, MissingDBConnection
-	}
-	if !c.enableMultipleConnections || len(q.ConnectionArgs) == 0 {
+	if len(q.ConnectionArgs) == 0 {
+		key := defaultKey(c.UID)
+		dbConn, ok := c.getDBConnection(key)
+
+		if !ok {
+			// Connection not in cache (expired or never created), establish a new one
+			db, err := c.Driver.Connect(ctx, c.instanceSettings, nil)
+			if err != nil {
+				return "", dbConnection{}, backend.DownstreamError(err)
+			}
+			dbConn = dbConnection{db, c.instanceSettings}
+			c.storeDBConnection(key, dbConn)
+		}
+		return key, dbConn, nil
+	} else {
+		key := keyWithConnectionArgs(c.UID, q.ConnectionArgs)
+		if cachedConn, ok := c.getDBConnection(key); ok {
+			return key, cachedConn, nil
+		}
+
+		db, err := c.Driver.Connect(ctx, c.instanceSettings, q.ConnectionArgs)
+		if err != nil {
+			return "", dbConnection{}, backend.DownstreamError(err)
+		}
+		// Assign this connection in the cache
+		dbConn := dbConnection{db, c.instanceSettings}
+		c.storeDBConnection(key, dbConn)
+
 		return key, dbConn, nil
 	}
+}
 
-	key = keyWithConnectionArgs(c.UID, q.ConnectionArgs)
-	if cachedConn, ok := c.getDBConnection(key); ok {
-		return key, cachedConn, nil
-	}
-
-	db, err := c.driver.Connect(ctx, dbConn.settings, q.ConnectionArgs)
-	if err != nil {
-		return "", dbConnection{}, backend.DownstreamError(err)
-	}
-	// Assign this connection in the cache
-	dbConn = dbConnection{db, dbConn.settings}
-	c.storeDBConnection(key, dbConn)
-
-	return key, dbConn, nil
+func getOAuthConnectionArgs(header string) json.RawMessage {
+	q := &sqlutil.Query{}
+	headers := http.Header{}
+	headers.Set(backend.OAuthIdentityTokenHeaderName, header)
+	applyHeaders(q, headers)
+	return q.ConnectionArgs
 }
 
 func shouldRetry(retryOn []string, err string) bool {

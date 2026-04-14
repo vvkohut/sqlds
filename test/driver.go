@@ -43,7 +43,6 @@ func NewTestDS(openDBfn func(msg json.RawMessage) (*sql.DB, error), converters [
 	return TestDS{
 		openDBfn:   openDBfn,
 		converters: converters,
-		macros:     macros,
 	}
 }
 
@@ -148,7 +147,6 @@ type Column struct {
 type TestDS struct {
 	openDBfn   func(msg json.RawMessage) (*sql.DB, error)
 	converters []sqlutil.Converter
-	macros     sqlds.Macros
 	sqlds.Driver
 }
 
@@ -170,11 +168,6 @@ func (s TestDS) Settings(ctx context.Context, config backend.DataSourceInstanceS
 		return sqlds.DriverSettings{}
 	}
 	return settings
-}
-
-// Macros - Macros for the test database
-func (s TestDS) Macros() sqlds.Macros {
-	return s.macros
 }
 
 // Converters - Converters for the test database

@@ -3,9 +3,9 @@ package sqlds
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"net/http"
 	"time"
 
@@ -15,29 +15,10 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
-// FormatQueryOption defines how the user has chosen to represent the data
-// Deprecated: use sqlutil.FormatQueryOption directly instead
-type FormatQueryOption = sqlutil.FormatQueryOption
-
-// Deprecated: use the values in sqlutil directly instead
-const (
-	// FormatOptionTimeSeries formats the query results as a timeseries using "LongToWide"
-	FormatOptionTimeSeries = sqlutil.FormatOptionTimeSeries
-	// FormatOptionTable formats the query results as a table using "LongToWide"
-	FormatOptionTable = sqlutil.FormatOptionTable
-	// FormatOptionLogs sets the preferred visualization to logs
-	FormatOptionLogs = sqlutil.FormatOptionLogs
-	// FormatOptionsTrace sets the preferred visualization to trace
-	FormatOptionTrace = sqlutil.FormatOptionTrace
-	// FormatOptionMulti formats the query results as a timeseries using "LongToMulti"
-	FormatOptionMulti = sqlutil.FormatOptionMulti
-)
-
-// Deprecated: use sqlutil.Query directly instead
 type Query = sqlutil.Query
 
 // GetQuery wraps sqlutil's GetQuery to add headers if needed
-func GetQuery(query backend.DataQuery, headers http.Header, setHeaders bool) (*Query, error) {
+func GetQuery(query backend.DataQuery, headers http.Header, setHeaders bool) (*sqlutil.Query, error) {
 	model, err := sqlutil.GetQuery(query)
 	if err != nil {
 		return nil, backend.PluginError(err)
@@ -72,7 +53,7 @@ func NewQuery(db Connection, settings backend.DataSourceInstanceSettings, conver
 }
 
 // Run sends the query to the connection and converts the rows to a dataframe.
-func (q *DBQuery) Run(ctx context.Context, query *Query, args ...interface{}) (data.Frames, error) {
+func (q *DBQuery) Run(ctx context.Context, query *sqlutil.Query, args ...interface{}) (data.Frames, error) {
 	start := time.Now()
 	rows, err := q.DB.QueryContext(ctx, query.RawSQL, args...)
 	if err != nil {
@@ -80,7 +61,14 @@ func (q *DBQuery) Run(ctx context.Context, query *Query, args ...interface{}) (d
 		if errors.Is(err, context.Canceled) {
 			errType = context.Canceled
 		}
-		errWithSource := backend.DownstreamError(fmt.Errorf("%w: %s", errType, err.Error()))
+		var errWithSource error
+		switch err.(type) {
+		default:
+			errWithSource = backend.DownstreamError(fmt.Errorf("%w: %s", errType, err.Error()))
+		case *proto.Exception:
+			errWithSource = backend.DownstreamError(fmt.Errorf("Code: %d. %s: %s", err.(*proto.Exception).Code, err.(*proto.Exception).Name, err.(*proto.Exception).Message))
+		}
+		//errWithSource := backend.DownstreamError(fmt.Errorf("%w: %s", errType, err.Error()))
 		q.metrics.CollectDuration(SourceDownstream, StatusError, time.Since(start).Seconds())
 		return sqlutil.ErrorFrameFromQuery(query), errWithSource
 	}
@@ -123,7 +111,7 @@ func (q *DBQuery) Run(ctx context.Context, query *Query, args ...interface{}) (d
 	return res, nil
 }
 
-func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fillMode *data.FillMissing, query *Query) (data.Frames, error) {
+func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fillMode *data.FillMissing, query *sqlutil.Query) (data.Frames, error) {
 	frame, err := sqlutil.FrameFromRows(rows, limit, converters...)
 	if err != nil {
 		return nil, err
@@ -145,7 +133,7 @@ func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fill
 	frame.Meta.PreferredVisualization = data.VisTypeGraph
 
 	switch query.Format {
-	case FormatOptionMulti:
+	case sqlutil.FormatOptionMulti:
 		if zeroRows {
 			return nil, ErrorNoResults
 		}
@@ -163,11 +151,11 @@ func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fill
 			}
 			return frames.Frames(), nil
 		}
-	case FormatOptionTable:
+	case sqlutil.FormatOptionTable:
 		frame.Meta.PreferredVisualization = data.VisTypeTable
-	case FormatOptionLogs:
+	case sqlutil.FormatOptionLogs:
 		frame.Meta.PreferredVisualization = data.VisTypeLogs
-	case FormatOptionTrace:
+	case sqlutil.FormatOptionTrace:
 		frame.Meta.PreferredVisualization = data.VisTypeTrace
 	// Format as timeSeries
 	default:
@@ -219,28 +207,6 @@ func fixFrameForLongToMulti(frame *data.Frame) error {
 		frame.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
 	}
 	return nil
-}
-
-func applyHeaders(query *Query, headers http.Header) *Query {
-	var args map[string]interface{}
-	if query.ConnectionArgs == nil {
-		query.ConnectionArgs = []byte("{}")
-	}
-	err := json.Unmarshal(query.ConnectionArgs, &args)
-	if err != nil {
-		backend.Logger.Warn(fmt.Sprintf("Failed to apply headers: %s", err.Error()))
-		return query
-	}
-	args[HeaderKey] = headers
-	raw, err := json.Marshal(args)
-	if err != nil {
-		backend.Logger.Warn(fmt.Sprintf("Failed to apply headers: %s", err.Error()))
-		return query
-	}
-
-	query.ConnectionArgs = raw
-
-	return query
 }
 
 func isProcessingDownstreamError(err error) bool {
