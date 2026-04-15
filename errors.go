@@ -17,6 +17,10 @@ var (
 	ErrorTimeout = errors.New("query timeout exceeded")
 	// ErrorNoResults is returned if there were no results returned
 	ErrorNoResults = errors.New("no results returned from query")
+	// ErrorRowValidation is returned when SQL rows validation fails (e.g., connection issues, corrupt results)
+	ErrorRowValidation = errors.New("SQL rows validation failed")
+	// ErrorConnectionClosed is returned when the database connection is unexpectedly closed
+	ErrorConnectionClosed = errors.New("database connection closed")
 )
 
 func ErrorSource(err error) backend.ErrorSource {
