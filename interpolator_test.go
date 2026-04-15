@@ -375,7 +375,7 @@ func TestInterpolateMacroEscaping(t *testing.T) {
 				},
 				Interval: time.Duration(1000000000),
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.NoError(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})
@@ -455,7 +455,7 @@ func TestInterpolateMacroInStringLiteral(t *testing.T) {
 				},
 				Interval: time.Duration(1000000000),
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.NoError(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})

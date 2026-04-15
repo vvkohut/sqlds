@@ -147,7 +147,6 @@ func (ds *HydrolixDatasource) GetDBFromQuery(ctx context.Context, q *sqlutil.Que
 
 // handleQuery will call query, and attempt to reconnect if the query failed
 func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQuery, headers http.Header) (data.Frames, error) {
-	backend.Logger.Info("my beautiful fork", "query", req.JSON)
 	if queryMutator, ok := ds.driver().(QueryMutator); ok {
 		ctx, req = queryMutator.MutateQuery(ctx, req)
 	}
@@ -162,9 +161,9 @@ func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQ
 	if err != nil {
 		return nil, err
 	}
-	q.RawSQL, err = ds.Interpolator.Interpolate(hdxQuery, ctx)
+	q.RawSQL, err = ds.Interpolator.Interpolate(ctx, hdxQuery)
 	if err != nil {
-		if errors.Is(err, sqlutil.ErrorBadArgumentCount) || err.Error() == ErrorParsingMacroBrackets.Error() {
+		if errors.Is(err, sqlutil.ErrorBadArgumentCount) || errors.Is(err, ErrorParsingMacroBrackets) {
 			err = backend.DownstreamError(err)
 		}
 		return sqlutil.ErrorFrameFromQuery(q), fmt.Errorf("%s: %w", "Could not apply macros", err)

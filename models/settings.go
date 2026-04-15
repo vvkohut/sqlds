@@ -48,24 +48,6 @@ type QuerySetting struct {
 	Value   string `json:"value"`
 }
 
-// allowedQuerySettings lists Hydrolix allowed settings transferred as URL query parameters
-var allowedQuerySettings = []string{
-	"hdx_query_max_rows",
-	"hdx_query_max_attempts",
-	"hdx_query_max_result_bytes",
-	"hdx_query_max_result_rows",
-	"hdx_query_max_timerange_sec",
-	"hdx_query_timerange_required",
-	"hdx_query_max_partitions",
-	"hdx_query_max_peers",
-	"hdx_query_pool_name",
-	"hdx_query_max_concurrent_partitions",
-	"hdx_http_proxy_enabled",
-	"hdx_http_proxy_ttl",
-	"hdx_query_admin_comment",
-	"hdx_query_max_execution_time",
-}
-
 // IsValid validates configuration data correctness
 func (settings *PluginSettings) IsValid() error {
 	if settings.Host == "" {
@@ -74,12 +56,7 @@ func (settings *PluginSettings) IsValid() error {
 	if settings.Port == 0 {
 		return backend.DownstreamError(ErrorMessageInvalidPort)
 	}
-	//if settings.UserName == "" {
-	//	return backend.DownstreamError(ErrorMessageInvalidUserName)
-	//}
-	//if settings.Password == "" {
-	//	return backend.DownstreamError(ErrorMessageInvalidPassword)
-	//}
+
 	if !slices.Contains([]string{"http", "native"}, settings.Protocol) {
 		return backend.DownstreamError(ErrorMessageInvalidProtocol)
 	}

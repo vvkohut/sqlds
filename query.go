@@ -74,6 +74,12 @@ func (q *DBQuery) Run(ctx context.Context, query *sqlutil.Query, args ...interfa
 	}
 	q.metrics.CollectDuration(SourceDownstream, StatusOK, time.Since(start).Seconds())
 
+	defer func() {
+		if err := rows.Close(); err != nil {
+			backend.Logger.Error(err.Error())
+		}
+	}()
+
 	// Check for an error response
 	if err := rows.Err(); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -86,12 +92,6 @@ func (q *DBQuery) Run(ctx context.Context, query *sqlutil.Query, args ...interfa
 		q.metrics.CollectDuration(SourceDownstream, StatusError, time.Since(start).Seconds())
 		return sqlutil.ErrorFrameFromQuery(query), errWithSource
 	}
-
-	defer func() {
-		if err := rows.Close(); err != nil {
-			backend.Logger.Error(err.Error())
-		}
-	}()
 
 	start = time.Now()
 	// Convert the response to frames

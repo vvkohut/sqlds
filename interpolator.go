@@ -120,7 +120,7 @@ func parseArgs(argString string) ([]string, int) {
 }
 
 // Interpolate returns an interpolated query string given a backend.DataQuery
-func (i Interpolator) Interpolate(query *HDXQuery, ctx context.Context) (string, error) {
+func (i Interpolator) Interpolate(ctx context.Context, query *HDXQuery) (string, error) {
 	if query.Round != "" && query.Round != "0" {
 		query.TimeRange = RoundTimeRange(query.TimeRange, query.Round)
 	}
@@ -156,7 +156,7 @@ func (i Interpolator) Interpolate(query *HDXQuery, ctx context.Context) (string,
 			rawSQL = rawSQL[0:match.pos] + strings.Replace(rawSQL[match.pos:], "$", "", 1)
 		} else {
 			macro := i.macros[match.name]
-			res, err := macro(query.WithSQL(rawSQL), match.args, match.pos, i.md, ctx)
+			res, err := macro(ctx, query.WithSQL(rawSQL), match.args, match.pos, i.md)
 			if err != nil {
 				return rawSQL, err
 			}

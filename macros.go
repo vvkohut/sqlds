@@ -22,9 +22,9 @@ const (
 	RegexPrefix    = "regex:"
 )
 
-var mapTypeFilterKye = regexp.MustCompile("^(.*)\\['.*']$")
+var mapTypeFilterKey = regexp.MustCompile("^(.*)\\['.*']$")
 
-type MacroFunc func(*HDXQuery, []string, parser.Pos, *MetaDataProvider, context.Context) (string, error)
+type MacroFunc func(context.Context, *HDXQuery, []string, parser.Pos, *MetaDataProvider) (string, error)
 
 // Converts a time.Time to a Date
 func timeToDate(t time.Time) string {
@@ -42,26 +42,26 @@ func timeToDateTime64(t time.Time) string {
 }
 
 // FromTimeFilter returns a time filter expression based on grafana's timepicker's "from" time in seconds
-func FromTimeFilter(query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func FromTimeFilter(_ context.Context, query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	return timeToDateTime(query.TimeRange.From), nil
 }
 
 // ToTimeFilter returns a time filter expression based on grafana's timepicker's "to" time in seconds
-func ToTimeFilter(query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func ToTimeFilter(_ context.Context, query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	return timeToDateTime(query.TimeRange.To), nil
 }
 
 // FromTimeFilterMs returns a time filter expression based on grafana's timepicker's "from" time in milliseconds
-func FromTimeFilterMs(query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func FromTimeFilterMs(_ context.Context, query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	return timeToDateTime64(query.TimeRange.From), nil
 }
 
 // ToTimeFilterMs returns a time filter expression based on grafana's timepicker's "to" time in milliseconds
-func ToTimeFilterMs(query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func ToTimeFilterMs(_ context.Context, query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	return timeToDateTime64(query.TimeRange.To), nil
 }
 
-func TimeFilter(query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider, context context.Context) (string, error) {
+func TimeFilter(context context.Context, query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider) (string, error) {
 	if len(args) > 1 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 0 or 1 argument, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
@@ -75,7 +75,7 @@ func TimeFilter(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Meta
 	if len(args) == 1 && args[0] != "" {
 		column = args[0]
 	} else {
-		pk, err := getPK(query.RawSQL, pos, mdProvider, query.Headers, context)
+		pk, err := getPK(context, query.RawSQL, pos, mdProvider, query.Headers)
 		if err != nil {
 			return "", err
 		}
@@ -85,8 +85,8 @@ func TimeFilter(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Meta
 	return fmt.Sprintf("%s >= %s AND %s <= %s", column, timeToDateTime(from), column, timeToDateTime(to)), nil
 }
 
-func TimeFilterMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider, context context.Context) (string, error) {
-	if len(args) != 1 {
+func TimeFilterMs(context context.Context, query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider) (string, error) {
+	if len(args) > 1 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 0 or 1 argument, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
 
@@ -99,7 +99,7 @@ func TimeFilterMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Me
 	if len(args) == 1 && args[0] != "" {
 		column = args[0]
 	} else {
-		pk, err := getPK(query.RawSQL, pos, mdProvider, query.Headers, context)
+		pk, err := getPK(context, query.RawSQL, pos, mdProvider, query.Headers)
 		if err != nil {
 			return "", err
 		}
@@ -109,7 +109,7 @@ func TimeFilterMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Me
 	return fmt.Sprintf("%s >= %s AND %s <= %s", column, timeToDateTime64(from), column, timeToDateTime64(to)), nil
 }
 
-func DateFilter(query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func DateFilter(_ context.Context, query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	if len(args) != 1 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 1 argument, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
@@ -122,7 +122,7 @@ func DateFilter(query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataProvide
 	return fmt.Sprintf("%s >= %s AND %s <= %s", column, timeToDate(from), column, timeToDate(to)), nil
 }
 
-func DateTimeFilter(query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func DateTimeFilter(_ context.Context, query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	if len(args) != 2 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 2 arguments, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
@@ -138,7 +138,7 @@ func DateTimeFilter(query *HDXQuery, args []string, _ parser.Pos, _ *MetaDataPro
 	return fmt.Sprintf("%s AND %s", dateFilter, timeFilter), nil
 }
 
-func TimeInterval(query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider, context context.Context) (string, error) {
+func TimeInterval(context context.Context, query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider) (string, error) {
 	if len(args) > 1 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 0 or 1 argument, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
@@ -149,7 +149,7 @@ func TimeInterval(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Me
 	if len(args) == 1 && args[0] != "" {
 		column = args[0]
 	} else {
-		pk, err := getPK(query.RawSQL, pos, mdProvider, query.Headers, context)
+		pk, err := getPK(context, query.RawSQL, pos, mdProvider, query.Headers)
 		if err != nil {
 			return "", err
 		}
@@ -160,7 +160,7 @@ func TimeInterval(query *HDXQuery, args []string, pos parser.Pos, mdProvider *Me
 	return fmt.Sprintf("toStartOfInterval(toDateTime(%s), INTERVAL %d second)", column, int(seconds)), nil
 }
 
-func TimeIntervalMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider, context context.Context) (string, error) {
+func TimeIntervalMs(context context.Context, query *HDXQuery, args []string, pos parser.Pos, mdProvider *MetaDataProvider) (string, error) {
 	if len(args) > 1 {
 		return "", backend.DownstreamError(fmt.Errorf("%w: expected 0 or 1 argument, received %d", sqlutil.ErrorBadArgumentCount, len(args)))
 	}
@@ -171,7 +171,7 @@ func TimeIntervalMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *
 	if len(args) == 1 && args[0] != "" {
 		column = args[0]
 	} else {
-		pk, err := getPK(query.RawSQL, pos, mdProvider, query.Headers, context)
+		pk, err := getPK(context, query.RawSQL, pos, mdProvider, query.Headers)
 		if err != nil {
 			return "", err
 		}
@@ -181,13 +181,13 @@ func TimeIntervalMs(query *HDXQuery, args []string, pos parser.Pos, mdProvider *
 	return fmt.Sprintf("toStartOfInterval(toDateTime64(%s, 3), INTERVAL %d millisecond)", column, int(milliseconds)), nil
 }
 
-func IntervalSeconds(query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func IntervalSeconds(_ context.Context, query *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	seconds := math.Max(query.Interval.Seconds(), 1)
 	return fmt.Sprintf("%d", int(seconds)), nil
 }
 
 // AdHocFilterMacro implements the $__adHocFilter() macro
-func AdHocFilterMacro(query *HDXQuery, params []string, pos parser.Pos, mdProvider *MetaDataProvider, ctx context.Context) (string, error) {
+func AdHocFilterMacro(ctx context.Context, query *HDXQuery, params []string, pos parser.Pos, mdProvider *MetaDataProvider) (string, error) {
 	if query.Filters == nil || len(query.Filters) == 0 {
 		return "1=1", nil
 	}
@@ -231,8 +231,8 @@ func AdHocFilterMacro(query *HDXQuery, params []string, pos parser.Pos, mdProvid
 
 	for _, filter := range query.Filters {
 		column := filter.Key
-		if mapTypeFilterKye.MatchString(filter.Key) {
-			column = mapTypeFilterKye.FindStringSubmatch(filter.Key)[1]
+		if mapTypeFilterKey.MatchString(filter.Key) {
+			column = mapTypeFilterKey.FindStringSubmatch(filter.Key)[1]
 		}
 		if slices.Contains(keyNames, column) {
 			keyType := keys[column]
@@ -353,14 +353,14 @@ func buildFilterCondition(filter AdHocFilter, keyType string) (string, error) {
 	} else if operator == "=~" {
 		regex, isRegex := getRegexValue(value)
 		if isRegex {
-			return fmt.Sprintf("match(toString(%s), '%s')", key, regex), nil
+			return fmt.Sprintf("match(toString(%s), $$%s$$)", key, regex), nil
 		} else {
 			return fmt.Sprintf("toString(%s) LIKE $$%s$$", key, escapeWildcard(value)), nil
 		}
 	} else if operator == "!~" {
 		regex, isRegex := getRegexValue(value)
 		if isRegex {
-			return fmt.Sprintf("not match(toString(%s), '%s')", key, regex), nil
+			return fmt.Sprintf("not match(toString(%s), $$%s$$)", key, regex), nil
 		} else {
 			return fmt.Sprintf("toString(%s) NOT LIKE $$%s$$", key, escapeWildcard(value)), nil
 		}
@@ -397,7 +397,7 @@ func getJoinedValues(values []string) (string, bool) {
 // escapeWildcard prepares wildcard patterns for LIKE queries
 func escapeWildcard(v string) string {
 	chars := []rune(v)
-	for i := range len(v) {
+	for i := range len(chars) {
 		if chars[i] == '*' && (i == 0 || chars[i-1] != '\\') {
 			chars[i] = '%'
 		}
@@ -407,11 +407,11 @@ func escapeWildcard(v string) string {
 	return v
 }
 
-func Stub(_ *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider, _ context.Context) (string, error) {
+func Stub(_ context.Context, _ *HDXQuery, _ []string, _ parser.Pos, _ *MetaDataProvider) (string, error) {
 	return "1=1", nil
 }
 
-func getPK(rawSQL string, pos parser.Pos, mdProvider *MetaDataProvider, headers http.Header, context context.Context) (string, error) {
+func getPK(context context.Context, rawSQL string, pos parser.Pos, mdProvider *MetaDataProvider, headers http.Header) (string, error) {
 	expr, err := parser.NewParser(rawSQL).ParseStmts()
 	if err != nil {
 		return rawSQL, err

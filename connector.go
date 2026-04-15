@@ -45,7 +45,7 @@ func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourc
 		return nil, backend.DownstreamError(err)
 	}
 	ds := driver.Settings(ctx, settings)
-	connections := *ttlcache.New[string, dbConnection](ttlcache.WithTTL[string, dbConnection](time.Hour))
+	connections := ttlcache.New[string, dbConnection](ttlcache.WithTTL[string, dbConnection](time.Hour))
 	connections.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, i *ttlcache.Item[string, dbConnection]) {
 		_ = i.Value().db.Close()
 	})
@@ -56,7 +56,7 @@ func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourc
 		driverSettings:   ds,
 		instanceSettings: settings,
 		pluginSettings:   pluginSettings,
-		connections:      &connections,
+		connections:      connections,
 	}
 	if pluginSettings.CredentialsType != "forwardOAuth" {
 		key := defaultKey(settings.UID)
@@ -94,7 +94,7 @@ func (c *HydrolixConnector) Connect(ctx context.Context, headers http.Header) (*
 	return &dbConn, err
 }
 
-func (c *HydrolixConnector) connectWithRetries(ctx context.Context, conn dbConnection, key string, headers http.Header) error {
+func (c *HydrolixConnector) connectWithRetries(ctx context.Context, connection dbConnection, key string, headers http.Header) error {
 	q := &sqlutil.Query{}
 	if c.driverSettings.ForwardHeaders {
 		applyHeaders(q, headers)
@@ -103,13 +103,13 @@ func (c *HydrolixConnector) connectWithRetries(ctx context.Context, conn dbConne
 	var db *sql.DB
 	var err error
 	for i := 0; i < c.driverSettings.Retries; i++ {
-		db, err = c.Reconnect(ctx, conn, q, key)
+		db, err = c.Reconnect(ctx, connection, q, key)
 		if err != nil {
 			return err
 		}
 		conn := dbConnection{
 			db:       db,
-			settings: conn.settings,
+			settings: connection.settings,
 		}
 		err = c.connect(conn)
 		if err == nil {
@@ -202,6 +202,7 @@ func (c *HydrolixConnector) storeDBConnection(key string, dbConn dbConnection) {
 // Dispose is called when an existing SQLDatasource needs to be replaced
 func (c *HydrolixConnector) Dispose() {
 	c.connections.DeleteAll()
+	c.connections.Stop()
 }
 
 func (c *HydrolixConnector) getDriverSettings() DriverSettings {

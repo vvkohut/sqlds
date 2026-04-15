@@ -67,7 +67,7 @@ func TestMacroFromTimeFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := FromTimeFilter(&query, []string{}, 0, &MetaDataProvider{}, context.Background())
+			got, err := FromTimeFilter(context.Background(), &query, []string{}, 0, &MetaDataProvider{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("macroFromTimeFilter() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -99,7 +99,7 @@ func TestMacroToTimeFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ToTimeFilter(&query, []string{}, 0, &MetaDataProvider{}, context.Background())
+			got, err := ToTimeFilter(context.Background(), &query, []string{}, 0, &MetaDataProvider{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("macroToTimeFilter() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -131,7 +131,7 @@ func TestMacroFromTimeFilterMs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := FromTimeFilterMs(&query, []string{}, 0, &MetaDataProvider{}, context.Background())
+			got, err := FromTimeFilterMs(context.Background(), &query, []string{}, 0, &MetaDataProvider{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("macroFromTimeFilterMs() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -163,7 +163,7 @@ func TestMacroToTimeFilterMs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ToTimeFilterMs(&query, []string{}, 0, &MetaDataProvider{}, context.Background())
+			got, err := ToTimeFilterMs(context.Background(), &query, []string{}, 0, &MetaDataProvider{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("macroToTimeFilterMs() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -182,7 +182,7 @@ func TestMacroDateFilter(t *testing.T) {
 			To:   to,
 		},
 	}
-	got, err := DateFilter(&query, []string{"dateCol"}, 0, &MetaDataProvider{}, context.Background())
+	got, err := DateFilter(context.Background(), &query, []string{"dateCol"}, 0, &MetaDataProvider{})
 	assert.Nil(t, err)
 	assert.Equal(t, "dateCol >= toDate('2014-11-12') AND dateCol <= toDate('2015-11-12')", got)
 }
@@ -196,7 +196,7 @@ func TestMacroDateTimeFilter(t *testing.T) {
 			To:   to,
 		},
 	}
-	got, err := DateTimeFilter(&query, []string{"dateCol", "timeCol"}, 0, &MetaDataProvider{}, context.Background())
+	got, err := DateTimeFilter(context.Background(), &query, []string{"dateCol", "timeCol"}, 0, &MetaDataProvider{})
 	assert.Nil(t, err)
 	assert.Equal(t, "(dateCol >= toDate('2014-11-12') AND dateCol <= toDate('2015-11-12')) AND (timeCol >= toDateTime(1415792726) AND timeCol <= toDateTime(1447328726))", got)
 }
@@ -206,7 +206,7 @@ func TestMacroTimeInterval(t *testing.T) {
 		RawSQL:   "select $__timeInterval(col) from foo",
 		Interval: time.Duration(20000000000),
 	}
-	got, err := TimeInterval(&query, []string{"col"}, 0, &MetaDataProvider{}, context.Background())
+	got, err := TimeInterval(context.Background(), &query, []string{"col"}, 0, &MetaDataProvider{})
 	assert.Nil(t, err)
 	assert.Equal(t, "toStartOfInterval(toDateTime(col), INTERVAL 20 second)", got)
 }
@@ -216,7 +216,7 @@ func TestMacroTimeIntervalMs(t *testing.T) {
 		RawSQL:   "select $__timeInterval_ms(col) from foo",
 		Interval: time.Duration(20000000000),
 	}
-	got, err := TimeIntervalMs(&query, []string{"col"}, 0, &MetaDataProvider{}, context.Background())
+	got, err := TimeIntervalMs(context.Background(), &query, []string{"col"}, 0, &MetaDataProvider{})
 	assert.Nil(t, err)
 	assert.Equal(t, "toStartOfInterval(toDateTime64(col, 3), INTERVAL 20000 millisecond)", got)
 }
@@ -226,7 +226,7 @@ func TestMacroIntervalSeconds(t *testing.T) {
 		RawSQL:   "select toStartOfInterval(col, INTERVAL $__interval_s second) AS time from foo",
 		Interval: time.Duration(20000000000),
 	}
-	got, err := IntervalSeconds(&query, []string{}, 0, &MetaDataProvider{}, context.Background())
+	got, err := IntervalSeconds(context.Background(), &query, []string{}, 0, &MetaDataProvider{})
 	assert.Nil(t, err)
 	assert.Equal(t, "20", got)
 }
@@ -270,7 +270,7 @@ func TestInterpolate(t *testing.T) {
 					To:   to,
 				},
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.Nil(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})
@@ -321,7 +321,7 @@ func TestInterpolateWithAutomaticParams(t *testing.T) {
 					To:   to,
 				},
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.Nil(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})
@@ -352,7 +352,7 @@ func TestNegativeCases(t *testing.T) {
 			query := &HDXQuery{
 				RawSQL: tc.input,
 			}
-			_, err := interpolator.Interpolate(query, context.Background())
+			_, err := interpolator.Interpolate(context.Background(), query)
 			require.Error(t, err, tc.error)
 			require.Equal(t, err.Error(), tc.error)
 		})
@@ -533,7 +533,7 @@ func TestAdHocFilterMacro(t *testing.T) {
 				RawSQL:  tc.input,
 				Filters: tc.filters,
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.Nil(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})
@@ -974,7 +974,7 @@ func TestAdHocFilterMacroWithExplicitTable(t *testing.T) {
 				RawSQL:  tc.input,
 				Filters: tc.filters,
 			}
-			interpolatedQuery, err := interpolator.Interpolate(query, context.Background())
+			interpolatedQuery, err := interpolator.Interpolate(context.Background(), query)
 			require.Nil(t, err)
 			assert.Equal(t, tc.output, interpolatedQuery)
 		})
@@ -998,7 +998,7 @@ func TestAdHocFilterMacroWithTooManyParams(t *testing.T) {
 		Filters: []AdHocFilter{{Key: "column", Operator: "=", Value: "test"}},
 	}
 
-	_, err := interpolator.Interpolate(query, context.Background())
+	_, err := interpolator.Interpolate(context.Background(), query)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expected 0 or 1 argument, received 2")
 }
