@@ -7,7 +7,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/hydrolix/clickhouse-sql-parser/parser"
-	"github.com/hydrolix/sqlds/v4/models"
+	"github.com/hydrolix/sqlds/v5/models"
 	"net/http"
 	"regexp"
 	"slices"

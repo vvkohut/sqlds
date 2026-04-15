@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func getFakeConnector(t *testing.T, shouldFail bool) *Connector {
+func getFakeConnector(t *testing.T, shouldFail bool) Connector {
 	t.Helper()
 	db, _ := newSqlmockDB(t)
 	if shouldFail {
@@ -22,13 +22,13 @@ func getFakeConnector(t *testing.T, shouldFail bool) *Connector {
 		connectDBs: []*sql.DB{db},
 	}
 	c, _ := NewConnector(context.TODO(), driver, buildInstanceSettings())
-	return &c
+	return c
 }
 
 func TestHealthChecker_Check(t *testing.T) {
 	tests := []struct {
 		name            string
-		Connector       *Connector
+		Connector       Connector
 		Metrics         Metrics
 		PreCheckHealth  func(ctx context.Context, req *backend.CheckHealthRequest) *backend.CheckHealthResult
 		PostCheckHealth func(ctx context.Context, req *backend.CheckHealthRequest) *backend.CheckHealthResult
@@ -98,7 +98,7 @@ func TestHealthChecker_Check(t *testing.T) {
 				want = &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: "Data source is working"}
 			}
 			hc := &HealthChecker{
-				Connector:       *connector,
+				Connector:       connector,
 				Metrics:         tt.Metrics,
 				PreCheckHealth:  tt.PreCheckHealth,
 				PostCheckHealth: tt.PostCheckHealth,

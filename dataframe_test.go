@@ -1,15 +1,16 @@
-package sqlds
+package sqlds_test
 
 import (
 	"context"
 	"fmt"
-	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/grafana/sqlds/v5"
-	"github.com/grafana/sqlds/v5/test"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
+	"github.com/hydrolix/sqlds/v5"
+	"github.com/hydrolix/sqlds/v5/test"
+	"github.com/stretchr/testify/require"
 )
 
 // we test how no-rows sql responses are converted to dataframes
@@ -157,12 +158,14 @@ func TestNoRowsFrame(t *testing.T) {
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
 			id := "empty-frames" + tt.name
-			driver, _ := test.NewDriver(id, tt.data, nil, test.DriverOpts{}, nil)
-			ds := sqlds.NewDatasource(driver)
+			driver, _ := test.NewDriver(id, tt.data, nil, test.DriverOpts{})
 
-			settings := backend.DataSourceInstanceSettings{UID: id, JSONData: []byte("{}")}
-			_, err := ds.NewDatasource(context.Background(), settings)
+			settings := backend.DataSourceInstanceSettings{UID: id, JSONData: []byte(`{"host":"localhost","port":9000,"protocol":"native"}`)}
+			connector, err := sqlds.NewConnector(context.Background(), driver, settings)
+			require.NoError(t, err)
 
+			ds := &sqlds.HydrolixDatasource{Connector: connector}
+			_, err = ds.NewDatasource(context.Background(), settings)
 			require.NoError(t, err)
 
 			req := backend.QueryDataRequest{

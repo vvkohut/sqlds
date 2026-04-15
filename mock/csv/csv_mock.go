@@ -13,7 +13,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/grafana/sqlds/v5"
+	"github.com/hydrolix/sqlds/v5"
 	_ "github.com/mithrandie/csvq-driver"
 )
 
@@ -88,9 +88,4 @@ func (h *SQLCSVMock) Connect(_ context.Context, _ backend.DataSourceInstanceSett
 // Converters defines list of string convertors
 func (h *SQLCSVMock) Converters() []sqlutil.Converter {
 	return []sqlutil.Converter{}
-}
-
-// Macros returns list of macro functions convert the macros of raw query
-func (h *SQLCSVMock) Macros() sqlds.Macros {
-	return sqlds.Macros{}
 }

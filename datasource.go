@@ -2,12 +2,16 @@ package sqlds
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"net/http"
+	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +24,7 @@ import (
 
 const defaultKeySuffix = "default"
 const defaultRowLimit = int64(-1)
+const envRowLimit = "GF_DATAPROXY_ROW_LIMIT"
 
 var (
 	HeaderKey                 = "grafana-http-headers"
@@ -31,7 +36,8 @@ func defaultKey(datasourceUID string) string {
 }
 
 func keyWithConnectionArgs(datasourceUID string, connArgs json.RawMessage) string {
-	return fmt.Sprintf("%s-%s", datasourceUID, string(connArgs))
+	connectionArgsHash := sha256.Sum256(connArgs)
+	return fmt.Sprintf("%s-%x", datasourceUID, connectionArgsHash)
 }
 
 type dbConnection struct {
@@ -104,12 +110,22 @@ func (ds *HydrolixDatasource) QueryData(ctx context.Context, req *backend.QueryD
 					stack := string(debug.Stack())
 					errorMsg := fmt.Sprintf("SQL datasource query execution panic: %v", r)
 
+					// Log panic without sensitive query data
 					backend.Logger.Error(errorMsg,
 						"panic", r,
 						"refID", query.RefID,
-						"stack", stack)
+						"queryType", query.QueryType,
+						"maxDataPoints", query.MaxDataPoints,
+						"interval", query.Interval)
 
-					response.Set(query.RefID, backend.ErrorResponseWithErrorSource(backend.PluginError(errors.New(errorMsg))))
+					// Log stack trace separately at debug level to avoid exposing in production
+					backend.Logger.Debug("Panic stack trace", "stack", stack)
+
+					response.Set(query.RefID, backend.DataResponse{
+						Frames:      nil,
+						Error:       backend.PluginError(errors.New(errorMsg)),
+						ErrorSource: backend.ErrorSourcePlugin,
+					})
 				}
 			}()
 
@@ -193,12 +209,17 @@ func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQ
 		args = argSetter.SetQueryArgs(ctx, headers)
 	}
 
+	var queryErrorMutator QueryErrorMutator
+	if mutator, ok := ds.driver().(QueryErrorMutator); ok {
+		queryErrorMutator = mutator
+	}
+
 	// FIXES:
 	//  * Some datasources (snowflake) expire connections or have an authentication token that expires if not used in 1 or 4 hours.
 	//    Because the datasource Driver does not include an option for permanent connections, we retry the connection
 	//    if the query fails. NOTE: this does not include some errors like "ErrNoRows"
 	dbQuery := NewQuery(dbConn.db, dbConn.settings, ds.driver().Converters(), fillMode, ds.rowLimit)
-	res, err := dbQuery.Run(ctx, q, args...)
+	res, err := dbQuery.Run(ctx, q, queryErrorMutator, args...)
 	if err == nil {
 		return res, nil
 	}
@@ -224,7 +245,7 @@ func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQ
 				}
 
 				dbQuery := NewQuery(db, dbConn.settings, ds.driver().Converters(), fillMode, ds.rowLimit)
-				res, err = dbQuery.Run(ctx, q, args...)
+				res, err = dbQuery.Run(ctx, q, queryErrorMutator, args...)
 				if err == nil {
 					return res, err
 				}
@@ -233,6 +254,14 @@ func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQ
 				}
 				backend.Logger.Warn("Retry failed", "error", err.Error())
 			}
+		}
+	}
+
+	// Check if the error is retryable and convert to downstream error if so
+	if errors.Is(err, ErrorQuery) && shouldRetry(ds.DriverSettings().RetryOn, err.Error()) {
+		// Convert retryable errors to downstream errors
+		if !backend.IsDownstreamError(err) {
+			err = backend.DownstreamError(err)
 		}
 	}
 
@@ -246,7 +275,7 @@ func (ds *HydrolixDatasource) handleQuery(ctx context.Context, req backend.DataQ
 			}
 
 			dbQuery := NewQuery(db, dbConn.settings, ds.driver().Converters(), fillMode, ds.rowLimit)
-			res, err = dbQuery.Run(ctx, q, args...)
+			res, err = dbQuery.Run(ctx, q, queryErrorMutator, args...)
 			if err == nil {
 				return res, err
 			}
@@ -310,15 +339,25 @@ func (ds *HydrolixDatasource) SetDefaultRowLimit(limit int64) {
 // 2. set via the environment variable
 // 3. set is set on grafana_ini and passed via grafana context
 // 4. default row limit set by SetDefaultRowLimit
-func (ds *HydrolixDatasource) newRowLimit(ctx context.Context, _ Connector) int64 {
+func (ds *HydrolixDatasource) newRowLimit(ctx context.Context, conn Connector) int64 {
 	if !ds.EnableRowLimit {
 		return defaultRowLimit
 	}
 
 	// Handles when row limit is set in the datasource configuration page
-	settingsLimit := ds.DriverSettings().RowLimit
+	settingsLimit := conn.getDriverSettings().RowLimit
 	if settingsLimit != 0 {
 		return settingsLimit
+	}
+
+	// Handles when row limit is set via environment variable
+	envLimit := os.Getenv(envRowLimit)
+	if envLimit != "" {
+		l, err := strconv.ParseInt(envLimit, 10, 64)
+		if err == nil && l >= 0 {
+			return l
+		}
+		log.DefaultLogger.Error(fmt.Sprintf("failed setting row limit from environment variable: %s", err))
 	}
 
 	// Handles row limit from sql config from grafana instance
@@ -326,7 +365,7 @@ func (ds *HydrolixDatasource) newRowLimit(ctx context.Context, _ Connector) int6
 	if ds.EnableRowLimit && config != nil {
 		sqlConfig, err := config.SQL()
 		if err != nil {
-			backend.Logger.Error("failed setting row limit from sql config", "error", err)
+			backend.Logger.Error(fmt.Sprintf("failed setting row limit from sql config: %s", err))
 		} else {
 			return sqlConfig.RowLimit
 		}

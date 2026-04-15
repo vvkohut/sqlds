@@ -8,7 +8,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/hydrolix/sqlds/v4/models"
+	"github.com/hydrolix/sqlds/v5/models"
 	"github.com/jellydator/ttlcache/v3"
 	"net/http"
 	"strings"

@@ -7,7 +7,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/hydrolix/sqlds/v4/models"
+	"github.com/hydrolix/sqlds/v5/models"
 	"net/http"
 	"sync/atomic"
 	"testing"

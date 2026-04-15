@@ -3,11 +3,13 @@ package sqlds
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"net/http"
 	"time"
+
+	"runtime/debug"
 
 	"github.com/grafana/dataplane/sdata/timeseries"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -15,10 +17,29 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
+// FormatQueryOption defines how the user has chosen to represent the data
+// Deprecated: use sqlutil.FormatQueryOption directly instead
+type FormatQueryOption = sqlutil.FormatQueryOption
+
+// Deprecated: use the values in sqlutil directly instead
+const (
+	// FormatOptionTimeSeries formats the query results as a timeseries using "LongToWide"
+	FormatOptionTimeSeries = sqlutil.FormatOptionTimeSeries
+	// FormatOptionTable formats the query results as a table using "LongToWide"
+	FormatOptionTable = sqlutil.FormatOptionTable
+	// FormatOptionLogs sets the preferred visualization to logs
+	FormatOptionLogs = sqlutil.FormatOptionLogs
+	// FormatOptionsTrace sets the preferred visualization to trace
+	FormatOptionTrace = sqlutil.FormatOptionTrace
+	// FormatOptionMulti formats the query results as a timeseries using "LongToMulti"
+	FormatOptionMulti = sqlutil.FormatOptionMulti
+)
+
+// Deprecated: use sqlutil.Query directly instead
 type Query = sqlutil.Query
 
 // GetQuery wraps sqlutil's GetQuery to add headers if needed
-func GetQuery(query backend.DataQuery, headers http.Header, setHeaders bool) (*sqlutil.Query, error) {
+func GetQuery(query backend.DataQuery, headers http.Header, setHeaders bool) (*Query, error) {
 	model, err := sqlutil.GetQuery(query)
 	if err != nil {
 		return nil, backend.PluginError(err)
@@ -53,26 +74,53 @@ func NewQuery(db Connection, settings backend.DataSourceInstanceSettings, conver
 }
 
 // Run sends the query to the connection and converts the rows to a dataframe.
-func (q *DBQuery) Run(ctx context.Context, query *sqlutil.Query, args ...interface{}) (data.Frames, error) {
+func (q *DBQuery) Run(ctx context.Context, query *Query, queryErrorMutator QueryErrorMutator, args ...interface{}) (data.Frames, error) {
 	start := time.Now()
 	rows, err := q.DB.QueryContext(ctx, query.RawSQL, args...)
 	if err != nil {
-		errType := ErrorQuery
+		var errWithSource backend.ErrorWithSource
+		defer func() {
+			q.metrics.CollectDuration(Source(errWithSource.ErrorSource()), StatusError, time.Since(start).Seconds())
+		}()
+
 		if errors.Is(err, context.Canceled) {
-			errType = context.Canceled
+			errWithSource := backend.NewErrorWithSource(err, backend.ErrorSourceDownstream)
+			return sqlutil.ErrorFrameFromQuery(query), errWithSource
 		}
-		var errWithSource error
-		switch err.(type) {
-		default:
-			errWithSource = backend.DownstreamError(fmt.Errorf("%w: %s", errType, err.Error()))
-		case *proto.Exception:
-			errWithSource = backend.DownstreamError(fmt.Errorf("Code: %d. %s: %s", err.(*proto.Exception).Code, err.(*proto.Exception).Name, err.(*proto.Exception).Message))
+
+		// Wrap with ErrorQuery to enable retry logic in datasource
+		queryErr := fmt.Errorf("%w: %w", ErrorQuery, err)
+
+		// Handle driver specific errors
+		if queryErrorMutator != nil {
+			errWithSource = queryErrorMutator.MutateQueryError(queryErr)
+			return sqlutil.ErrorFrameFromQuery(query), errWithSource
 		}
-		//errWithSource := backend.DownstreamError(fmt.Errorf("%w: %s", errType, err.Error()))
-		q.metrics.CollectDuration(SourceDownstream, StatusError, time.Since(start).Seconds())
+
+		// If we get to this point, assume the error is from the plugin
+		errWithSource = backend.NewErrorWithSource(queryErr, backend.DefaultErrorSource)
+
 		return sqlutil.ErrorFrameFromQuery(query), errWithSource
 	}
 	q.metrics.CollectDuration(SourceDownstream, StatusOK, time.Since(start).Seconds())
+
+	// Check for an error response
+	if err := rows.Err(); err != nil {
+		queryErr := fmt.Errorf("%w: %w", ErrorQuery, err)
+		errWithSource := backend.NewErrorWithSource(queryErr, backend.DefaultErrorSource)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Should we even response with an error here?
+			// The panel will simply show "no data"
+			errWithSource = backend.NewErrorWithSource(fmt.Errorf("%w: %s", err, "Error response from database"), backend.ErrorSourceDownstream)
+			return sqlutil.ErrorFrameFromQuery(query), errWithSource
+		}
+		if queryErrorMutator != nil {
+			errWithSource = queryErrorMutator.MutateQueryError(queryErr)
+		}
+
+		q.metrics.CollectDuration(Source(errWithSource.ErrorSource()), StatusError, time.Since(start).Seconds())
+		return sqlutil.ErrorFrameFromQuery(query), errWithSource
+	}
 
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -80,38 +128,45 @@ func (q *DBQuery) Run(ctx context.Context, query *sqlutil.Query, args ...interfa
 		}
 	}()
 
-	// Check for an error response
-	if err := rows.Err(); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// Should we even response with an error here?
-			// The panel will simply show "no data"
-			errWithSource := backend.DownstreamError(fmt.Errorf("%s: %w", "No results from query", err))
-			return sqlutil.ErrorFrameFromQuery(query), errWithSource
-		}
-		errWithSource := backend.DownstreamError(fmt.Errorf("%s: %w", "Error response from database", err))
-		q.metrics.CollectDuration(SourceDownstream, StatusError, time.Since(start).Seconds())
-		return sqlutil.ErrorFrameFromQuery(query), errWithSource
-	}
+	return q.convertRowsToFrames(rows, query, queryErrorMutator)
+}
 
-	start = time.Now()
-	// Convert the response to frames
+func (q *DBQuery) convertRowsToFrames(rows *sql.Rows, query *Query, queryErrorMutator QueryErrorMutator) (data.Frames, error) {
+	source := SourcePlugin
+	status := StatusOK
+	start := time.Now()
+	defer func() {
+		q.metrics.CollectDuration(source, status, time.Since(start).Seconds())
+	}()
+
 	res, err := getFrames(rows, q.rowLimit, q.converters, q.fillMode, query)
 	if err != nil {
-		// We default to plugin error source
-		errSource := backend.ErrorSourcePlugin
-		if backend.IsDownstreamHTTPError(err) || isProcessingDownstreamError(err) {
-			errSource = backend.ErrorSourceDownstream
-		}
-		errWithSource := backend.NewErrorWithSource(fmt.Errorf("%w: %s", err, "Could not process SQL results"), errSource)
-		q.metrics.CollectDuration(Source(errSource), StatusError, time.Since(start).Seconds())
-		return sqlutil.ErrorFrameFromQuery(query), errWithSource
-	}
+		status = StatusError
 
-	q.metrics.CollectDuration(SourcePlugin, StatusOK, time.Since(start).Seconds())
+		// Additional checks for processing errors
+		if backend.IsDownstreamHTTPError(err) {
+			source = SourceDownstream
+		} else if queryErrorMutator != nil {
+			errWithSource := queryErrorMutator.MutateQueryError(err)
+			source = Source(errWithSource.ErrorSource())
+		}
+
+		return sqlutil.ErrorFrameFromQuery(query), backend.NewErrorWithSource(
+			fmt.Errorf("%w: %s", err, "Could not process SQL results"),
+			backend.ErrorSource(source),
+		)
+	}
 	return res, nil
 }
 
-func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fillMode *data.FillMissing, query *sqlutil.Query) (data.Frames, error) {
+// getFrames converts rows to dataframes
+func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fillMode *data.FillMissing, query *Query) (data.Frames, error) {
+	// Validate rows before processing to prevent panics
+	if err := validateRows(rows); err != nil {
+		backend.Logger.Error("Invalid SQL rows", "error", err.Error())
+		return nil, err
+	}
+
 	frame, err := sqlutil.FrameFromRows(rows, limit, converters...)
 	if err != nil {
 		return nil, err
@@ -133,7 +188,7 @@ func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fill
 	frame.Meta.PreferredVisualization = data.VisTypeGraph
 
 	switch query.Format {
-	case sqlutil.FormatOptionMulti:
+	case FormatOptionMulti:
 		if zeroRows {
 			return nil, ErrorNoResults
 		}
@@ -151,11 +206,11 @@ func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fill
 			}
 			return frames.Frames(), nil
 		}
-	case sqlutil.FormatOptionTable:
+	case FormatOptionTable:
 		frame.Meta.PreferredVisualization = data.VisTypeTable
-	case sqlutil.FormatOptionLogs:
+	case FormatOptionLogs:
 		frame.Meta.PreferredVisualization = data.VisTypeLogs
-	case sqlutil.FormatOptionTrace:
+	case FormatOptionTrace:
 		frame.Meta.PreferredVisualization = data.VisTypeTrace
 	// Format as timeSeries
 	default:
@@ -171,6 +226,34 @@ func getFrames(rows *sql.Rows, limit int64, converters []sqlutil.Converter, fill
 		}
 	}
 	return data.Frames{frame}, nil
+}
+
+// accessColumns checks whether we can access rows.Columns, checking
+// for error or panic. In the case of panic, logs the stack trace at debug level
+// for security
+func accessColumns(rows *sql.Rows) (columnErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			columnErr = fmt.Errorf("panic accessing columns: %v", r)
+			stack := string(debug.Stack())
+			backend.Logger.Debug("accessColumns panic stack trace", "stack", stack)
+		}
+	}()
+	_, columnErr = rows.Columns()
+	return columnErr
+}
+
+// validateRows performs safety checks on SQL rows to prevent panics
+func validateRows(rows *sql.Rows) error {
+	if rows == nil {
+		return fmt.Errorf("%w: rows is nil", ErrorRowValidation)
+	}
+
+	err := accessColumns(rows)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrorRowValidation, err)
+	}
+	return nil
 }
 
 // fixFrameForLongToMulti edits the passed in frame so that it's first time field isn't nullable and has the correct meta
@@ -209,16 +292,24 @@ func fixFrameForLongToMulti(frame *data.Frame) error {
 	return nil
 }
 
-func isProcessingDownstreamError(err error) bool {
-	downstreamErrors := []error{
-		data.ErrorInputFieldsWithoutRows,
-		data.ErrorSeriesUnsorted,
-		data.ErrorNullTimeValues,
+func applyHeaders(query *Query, headers http.Header) *Query {
+	var args map[string]interface{}
+	if query.ConnectionArgs == nil {
+		query.ConnectionArgs = []byte("{}")
 	}
-	for _, e := range downstreamErrors {
-		if errors.Is(err, e) {
-			return true
-		}
+	err := json.Unmarshal(query.ConnectionArgs, &args)
+	if err != nil {
+		backend.Logger.Warn(fmt.Sprintf("Failed to apply headers: %s", err.Error()))
+		return query
 	}
-	return false
+	args[HeaderKey] = headers
+	raw, err := json.Marshal(args)
+	if err != nil {
+		backend.Logger.Warn(fmt.Sprintf("Failed to apply headers: %s", err.Error()))
+		return query
+	}
+
+	query.ConnectionArgs = raw
+
+	return query
 }

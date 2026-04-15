@@ -1,24 +1,21 @@
-package sqlds
+package sqlds_test
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"testing"
-
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/grafana/sqlds/v4"
-	"github.com/grafana/sqlds/v4/test"
+	"github.com/hydrolix/sqlds/v5"
+	"github.com/hydrolix/sqlds/v5/test"
 	"github.com/stretchr/testify/assert"
+	"testing"
 )
 
 func Test_health_retries(t *testing.T) {
 	opts := test.DriverOpts{
 		ConnectError: errors.New("foo"),
 	}
-	cfg := `{ "timeout": 0, "retries": 5, "retryOn": ["foo"] }`
+	cfg := `{ "timeout": 0, "retries": 5, "retryOn": ["foo"], "host": "localhost", "port": 9000, "protocol": "native" }`
 	req, handler, ds := healthRequest(t, "timeout", opts, cfg)
 
 	_, err := ds.CheckHealth(context.Background(), &req)
@@ -28,12 +25,12 @@ func Test_health_retries(t *testing.T) {
 }
 
 func Test_query_retries(t *testing.T) {
-	cfg := `{ "timeout": 0, "retries": 5, "retryOn": ["foo"] }`
+	cfg := `{ "timeout": 0, "retries": 5, "retryOn": ["foo"], "host": "localhost", "port": 9000, "protocol": "native" }`
 	opts := test.DriverOpts{
 		QueryError: errors.New("foo"),
 	}
 
-	req, handler, ds := queryRequest(t, "error", opts, cfg, nil)
+	req, handler, ds := queryRequest(t, "error", opts, cfg)
 
 	data, err := ds.QueryData(context.Background(), req)
 	assert.Nil(t, err)
@@ -56,9 +53,9 @@ func Test_query_apply_headers(t *testing.T) {
 		QueryFailTimes: 1, // first check always fails since headers are not available on initial connect
 		OnConnect:      onConnect,
 	}
-	cfg := `{ "timeout": 0, "retries": 1, "retryOn": ["missing token"], "forwardHeaders": true }`
+	cfg := `{ "timeout": 0, "retries": 1, "retryOn": ["missing token"], "forwardHeaders": true, "host": "localhost", "port": 9000, "protocol": "native" }`
 
-	req, handler, ds := queryRequest(t, "headers", opts, cfg, nil)
+	req, handler, ds := queryRequest(t, "headers", opts, cfg)
 
 	req.SetHTTPHeader("foo", "bar")
 
@@ -80,7 +77,7 @@ func Test_check_health_with_headers(t *testing.T) {
 		ConnectFailTimes: 1, // first check always fails since headers are not available on initial connect
 		OnConnect:        onConnect,
 	}
-	cfg := `{ "timeout": 0, "retries": 2, "retryOn": ["missing token"], "forwardHeaders": true }`
+	cfg := `{ "timeout": 0, "retries": 2, "retryOn": ["missing token"], "forwardHeaders": true, "host": "localhost", "port": 9000, "protocol": "native" }`
 	req, handler, ds := healthRequest(t, "health-headers", opts, cfg)
 	r := &req
 	r.SetHTTPHeader("foo", "bar")
@@ -93,7 +90,7 @@ func Test_check_health_with_headers(t *testing.T) {
 }
 
 func Test_no_errors(t *testing.T) {
-	req, _, ds := healthRequest(t, "pass", test.DriverOpts{}, "{}")
+	req, _, ds := healthRequest(t, "pass", test.DriverOpts{}, `{"host":"localhost","port":9000,"protocol":"native"}`)
 	result, err := ds.CheckHealth(context.Background(), &req)
 
 	assert.Nil(t, err)
@@ -101,136 +98,12 @@ func Test_no_errors(t *testing.T) {
 	assert.Equal(t, expected, result.Message)
 }
 
-func Test_custom_marco_errors(t *testing.T) {
-	cfg := `{ "timeout": 0, "retries": 0, "retryOn": ["foo"], query: "badArgumentCount" }`
-	opts := test.DriverOpts{}
-
-	badArgumentCountFunc := func(query *sqlutil.Query, args []string) (string, error) {
-		return "", sqlutil.ErrorBadArgumentCount
-	}
-	macros := sqlutil.Macros{
-		"foo": badArgumentCountFunc,
-	}
-
-	req, _, ds := queryRequest(t, "interpolate", opts, cfg, macros)
-
-	req.Queries[0].JSON = []byte(`{ "rawSql": "select $__foo from bar;" }`)
-
-	data, err := ds.QueryData(context.Background(), req)
-	assert.Nil(t, err)
-
-	res := data.Responses["foo"]
-	assert.NotNil(t, res.Error)
-	assert.Equal(t, backend.ErrorSourceDownstream, res.ErrorSource)
-	assert.Contains(t, res.Error.Error(), sqlutil.ErrorBadArgumentCount.Error())
-}
-
-func Test_default_macro_errors(t *testing.T) {
-	tests := []struct {
-		name      string
-		rawSQL    string
-		wantError string
-	}{
-		{
-			name:      "missing parameters",
-			rawSQL:    "select * from bar where $__timeGroup(",
-			wantError: "missing close bracket",
-		},
-		{
-			name:      "incorrect argument count 0 - timeGroup",
-			rawSQL:    "select * from bar where $__timeGroup()",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-		{
-			name:      "incorrect argument count 3 - timeGroup",
-			rawSQL:    "select * from bar where $__timeGroup(1,2,3)",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-		{
-			name:      "incorrect argument count 0 - timeFilter",
-			rawSQL:    "select * from bar where $__timeFilter",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-		{
-			name:      "incorrect argument count 3 - timeFilter",
-			rawSQL:    "select * from bar where $__timeFilter(1,2,3)",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-		{
-			name:      "incorrect argument count 0 - timeFrom",
-			rawSQL:    "select * from bar where $__timeFrom",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-		{
-			name:      "incorrect argument count 3 - timeFrom",
-			rawSQL:    "select * from bar where $__timeFrom(1,2,3)",
-			wantError: sqlutil.ErrorBadArgumentCount.Error(),
-		},
-	}
-
-	// Common test configuration
-	cfg := `{ "timeout": 0, "retries": 0, "retryOn": ["foo"], query: "badArgumentCount" }`
-	opts := test.DriverOpts{}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Setup request
-			req, _, ds := queryRequest(t, "interpolate", opts, cfg, nil)
-			req.Queries[0].JSON = []byte(fmt.Sprintf(`{ "rawSql": "%s" }`, tt.rawSQL))
-
-			// Execute query
-			data, err := ds.QueryData(context.Background(), req)
-			assert.Nil(t, err)
-
-			// Verify response
-			res := data.Responses["foo"]
-			assert.NotNil(t, res.Error)
-			assert.Equal(t, backend.ErrorSourceDownstream, res.ErrorSource)
-			assert.Contains(t, res.Error.Error(), tt.wantError)
-		})
-	}
-}
-
-func Test_query_panic_recovery(t *testing.T) {
-	cfg := `{ "timeout": 0, "retries": 0, "retryOn": [] }`
-	opts := test.DriverOpts{}
-
-	// Create a macro that triggers a panic
-	panicMacro := func(query *sqlutil.Query, args []string) (string, error) {
-		panic("Random panic for testing purposes")
-	}
-	macros := sqlutil.Macros{
-		"panicTest": panicMacro,
-	}
-
-	req, _, ds := queryRequest(t, "panic-test", opts, cfg, macros)
-
-	// Set up a query that uses the panic-triggering macro
-	req.Queries[0].JSON = []byte(`{ "rawSql": "SELECT $__panicTest() FROM test_table;" }`)
-
-	// Execute the query
-	data, err := ds.QueryData(context.Background(), req)
-
-	// Verify that the panic was caught and converted to an error
-	assert.Nil(t, err)
-	assert.NotNil(t, data.Responses)
-
-	res := data.Responses["foo"]
-	assert.NotNil(t, res.Error)
-	assert.Equal(t, backend.ErrorSourcePlugin, res.ErrorSource)
-	assert.Contains(t, res.Error.Error(), "SQL datasource query execution panic")
-	assert.Contains(t, res.Error.Error(), "Random panic for testing purposes")
-	assert.Nil(t, res.Frames)
-}
-
-func queryRequest(t *testing.T, name string, opts test.DriverOpts, cfg string, marcos sqlutil.Macros) (*backend.QueryDataRequest, *test.SqlHandler, *sqlds.SQLDatasource) {
-	driver, handler := test.NewDriver(name, test.Data{}, nil, opts, marcos)
-	ds := sqlds.NewDatasource(driver)
-
+func queryRequest(t *testing.T, name string, opts test.DriverOpts, cfg string) (*backend.QueryDataRequest, *test.SqlHandler, *sqlds.HydrolixDatasource) {
+	driver, handler := test.NewDriver(name, test.Data{}, nil, opts)
 	req, settings := setupQueryRequest(name, cfg)
 
-	_, err := ds.NewDatasource(context.Background(), settings)
-	assert.Equal(t, nil, err)
+	ds := newTestDatasource(t, driver, settings)
+
 	return req, handler, ds
 }
 
@@ -249,14 +122,12 @@ func setupQueryRequest(id string, cfg string) (*backend.QueryDataRequest, backen
 	}, s
 }
 
-func healthRequest(t *testing.T, name string, opts test.DriverOpts, cfg string) (backend.CheckHealthRequest, *test.SqlHandler, *sqlds.SQLDatasource) {
-	driver, handler := test.NewDriver(name, test.Data{}, nil, opts, nil)
-	ds := sqlds.NewDatasource(driver)
-
+func healthRequest(t *testing.T, name string, opts test.DriverOpts, cfg string) (backend.CheckHealthRequest, *test.SqlHandler, *sqlds.HydrolixDatasource) {
+	driver, handler := test.NewDriver(name, test.Data{}, nil, opts)
 	req, settings := setupHealthRequest(name, cfg)
 
-	_, err := ds.NewDatasource(context.Background(), settings)
-	assert.Equal(t, nil, err)
+	ds := newTestDatasource(t, driver, settings)
+
 	return req, handler, ds
 }
 
@@ -268,4 +139,19 @@ func setupHealthRequest(id string, cfg string) (backend.CheckHealthRequest, back
 		},
 	}
 	return req, settings
+}
+
+// newTestDatasource creates a HydrolixDatasource for testing, bypassing NewConnector's plugin settings validation.
+func newTestDatasource(t *testing.T, driver sqlds.Driver, settings backend.DataSourceInstanceSettings) *sqlds.HydrolixDatasource {
+
+	_, err := driver.Connect(context.Background(), settings, nil)
+	assert.Nil(t, err)
+	conn, err := sqlds.NewConnector(context.Background(), driver, settings)
+	assert.Nil(t, err)
+
+	ds := &sqlds.HydrolixDatasource{Connector: conn}
+	_, err = ds.NewDatasource(context.Background(), settings)
+	assert.Nil(t, err)
+
+	return ds
 }

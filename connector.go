@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/hydrolix/sqlds/v4/models"
+	"github.com/hydrolix/sqlds/v5/models"
 	"github.com/jellydator/ttlcache/v3"
 	"net/http"
 	"strings"
@@ -39,7 +39,7 @@ type HydrolixConnector struct {
 	pluginSettings   models.PluginSettings
 }
 
-func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourceInstanceSettings) (Connector, error) {
+func NewConnector(ctx context.Context, driver Driver, settings backend.DataSourceInstanceSettings) (*HydrolixConnector, error) {
 	pluginSettings, err := models.NewPluginSettings(ctx, settings)
 	if err != nil {
 		return nil, backend.DownstreamError(err)
@@ -131,28 +131,6 @@ func (c *HydrolixConnector) connectWithRetries(ctx context.Context, connection d
 	}
 
 	return err
-}
-
-func applyHeaders(query *sqlutil.Query, headers http.Header) *sqlutil.Query {
-	var args map[string]interface{}
-	if query.ConnectionArgs == nil {
-		query.ConnectionArgs = []byte("{}")
-	}
-	err := json.Unmarshal(query.ConnectionArgs, &args)
-	if err != nil {
-		backend.Logger.Warn("Failed to apply headers", "error", err.Error())
-		return query
-	}
-	args[HeaderKey] = headers
-	raw, err := json.Marshal(args)
-	if err != nil {
-		backend.Logger.Warn("Failed to apply headers", "error", err.Error())
-		return query
-	}
-
-	query.ConnectionArgs = raw
-
-	return query
 }
 
 func (c *HydrolixConnector) connect(conn dbConnection) error {
